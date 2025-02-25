@@ -101,7 +101,7 @@ def vola_filter(ETF_list, vola_list, baseline, start, end, filter_val):
 def normalized_return(tick_df, main_df, vola, start_date, end_date):
     global momentum_diff_dict
     mean_list = []
-    for time in momentum_diff_dict.values():
+    # for time in momentum_diff_dict.values():
 
 
 
