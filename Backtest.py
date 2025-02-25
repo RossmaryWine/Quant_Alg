@@ -15,10 +15,10 @@ df_list = []
 cpi = pd.DataFrame(columns=['CPIAUCSL', 'Inflation_YoY', 'Inflation_MoM'])
 # dict containing the different lookback periods for momentum and normalized return calulation
 momentum_diff_dict = {
-    "1MOreturn" : 1,
-    "3MOreturn" : 3,
-    "6MOreturn" : 6,
-    "1YRreturn" : 12
+    "1MOmomentum" : 1,
+    "3MOmomentum" : 3,
+    "6MOmomentum" : 6,
+    "1YRmomentum" : 12
     }
 
 def calc_vola(tick, start_date, end_date):
@@ -33,7 +33,12 @@ def calc_vola(tick, start_date, end_date):
     div_ = ticker.dividends
 
     #remove timezone from it being new york
-    div_.index = div_.index.tz_localize(None)
+    try:
+        div_.index = div_.index.tz_localize(None)
+    # this error doesn't occur unless there is nothing in the date column, AKA failed to retrieve data
+    except AttributeError:
+        print("failed to retrieve info! possibly due to ticker name or yf timing out")
+        return 100
 
     # extract the dividends of specificed start to end date
     dividends_filtered = div_.loc[start_date:end_date]
@@ -56,14 +61,6 @@ def calc_vola(tick, start_date, end_date):
     # reset index again
     default_df = default_df.reset_index()
     # print(based.columns) debug statement
-
-    # reset the date type of dividends as the ticker date aren't localized but dividends df could be centralized towards New York
-    try:
-        dividends_df["Date"] = dividends_df["Date"].dt.tz_localize(None)
-    # this error doesn't occur unless there is nothing in the date column, AKA failed to retrieve data
-    except AttributeError:
-        print("failed to retrieve info! check the ticker name")
-        return 100
 
     # merge 2 dfs with Date column as the merge key and add matching dividends rows, if none dividend = NaN(left join)
     default_df = default_df.merge(dividends_df, on="Date", how="left")
@@ -217,8 +214,8 @@ def main():
     #                   "Utilities", "Materials"]
 
     # the dataframe that stores morst of the cacluations for each of the ranked ETFs
-    main_col = ['ticker', '1MOreturn', '1MOreturnScore', '3MOreturn', '3MOreturnScore', '6MOreturn', \
-                '6MOreturnScore', '1YRreturn', '1YRreturnScore', 'HQM', 'vola']
+    main_col = ['ticker', '1MOmomentum', '1MOmomentumScore', '3MOmomentum', '3MOmomentumScore', '6MOmomentum', \
+                '6MOmomentumScore', '1YRmomentum', '1YRmomentumScore', 'HQM', 'vola']
     main_frame = pd.DataFrame(columns = main_col)
 
     start_ = "1991-01-01"
