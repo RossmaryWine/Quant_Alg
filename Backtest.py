@@ -21,7 +21,7 @@ momentum_diff_dict = {
     "1YRmomentum" : 12
     }
 
-def calc_vola(tick, start_date, end_date):
+def calc_vola(tick, start_date, end_date, periods = {'1MO' : 20, '3MO' : 60, '6MO' : 120, '1YR' : 252}):
     # get SPY from yfinance 91-25
     ticker = yf.Ticker(tick)
     default_df = yf.download(tick, start_date, end=end_date)
@@ -75,6 +75,12 @@ def calc_vola(tick, start_date, end_date):
                                             if i != 0 else 0 for i in range(len(default_df[f"Close_{tick}"]))]
 
     # use the volatility formula to get vola
+    for name, i in periods.items():
+        actual_day = min(i, len(default_df))
+        default_df[f"Vol_{name}"] = (
+                default_df[f"Total_Return_{tick}"].rolling(window=actual_day, min_periods=int(0.5*actual_day))\
+                .std()*np.sqrt(252/actual_day)
+                )
     volatility = np.std(default_df[f"Total_Return_{tick}"].dropna()) * np.sqrt(252)
     
     return default_df, volatility
@@ -94,13 +100,6 @@ def vola_filter(ETF_list, vola_list, baseline, start, end, filter_val):
 
         # to prevent the unlikely event that yahoo finance shuts down overly fast access
         time.sleep(0.2)
-
-def normalized_return(tick_df, main_df, vola, start_date, end_date):
-    global momentum_diff_dict
-    mean_list = []
-    # for time in momentum_diff_dict.values():
-
-
 
 
 def save_df_csv(df, tick):
@@ -123,6 +122,7 @@ def extract_csv(tick):
     return df
 
 
+# this function not only calcs the momentum but also the normalized return, subject to change
 def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
     global cpi
     global momentum_diff_dict
@@ -159,6 +159,10 @@ def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
     tick_df[f'Inflation_Adjusted_Log_Return_{ticker}'] = np.log(1 + tick_df[f'Total_Return_{ticker}']) - \
                                                          np.log(1 + tick_df["Inflation_DoD"]/100)
     
+    # variables for normalized return
+    target_vola = 0.1
+    norm_re_list = []
+    
     # loop through key value pair in dict
     for type, month in momentum_diff_dict.items():
 
@@ -176,11 +180,21 @@ def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
         log_momentum = temp_df[f'Inflation_Adjusted_Log_Return_{ticker}'].sum()
         compounded_momentum = (np.exp(log_momentum) - 1)*100  # Convert back to percentage
 
+        #calculates the normalized return
+        type_mod = type.replace("momentum", "")
+        # volaility nromalized return formula
+        normalized_return = (compounded_momentum/tick_df[f"Vol_{type_mod}"].iloc[-1])*target_vola
+        norm_re_list.append(normalized_return)
+
         # load value in main dataframe
         main_df.loc[main_df['ticker'] == ticker, type] = compounded_momentum
 
-        if ticker == "BKLN":
-            save_df_csv(tick_df, ticker)
+    # mean of different periods of normalized return
+    norm_mean_re = mean(norm_re_list)
+    main_df.loc[main_df['ticker'] == ticker, 'Norm_return'] = norm_mean_re
+
+    if ticker == "BKLN":
+        save_df_csv(tick_df, ticker)
     
     # this code does not work due to the fact that percentileofscore() requires every ticker to be populated before running
     # otherwise it does not work. the score calculation step and the follow up is forced into main()
@@ -215,7 +229,7 @@ def main():
 
     # the dataframe that stores morst of the cacluations for each of the ranked ETFs
     main_col = ['ticker', '1MOmomentum', '1MOmomentumScore', '3MOmomentum', '3MOmomentumScore', '6MOmomentum', \
-                '6MOmomentumScore', '1YRmomentum', '1YRmomentumScore', 'HQM', 'vola']
+                '6MOmomentumScore', '1YRmomentum', '1YRmomentumScore', 'HQM', 'Norm_return', 'vola']
     main_frame = pd.DataFrame(columns = main_col)
 
     start_ = "1991-01-01"
@@ -247,7 +261,6 @@ def main():
     temp_df = temp_df.merge(temp_df2, how="inner", on="Date")
     cpi = temp_df
     cpi = cpi.set_index("Date")
-    # cpi["Date"] = pd.to_datetime(cpi["Date"])
     # save_df_csv(cpi, "cpi2")
 
     # """
@@ -285,6 +298,11 @@ def main():
     for i in range(len(list_tick)):
 
         # momentum calculation using data spanning from a year ago to today
+        # senarios: inflation YoY, 6Mo6M, MoM, WoW, DoD ---
+        #                                                 |
+        #                                                 V
+        #           normalized return with or without inflation
+        # 10 different senarios to test out when backtesting
         calc_momemtum(list_tick[i], df_list[i], main_frame, start_adj, end_)
         
     # calc momentum score, aka the percentile rank for every ticker in the 4 momentum catagories
