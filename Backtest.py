@@ -183,7 +183,7 @@ def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
         #calculates the normalized return
         type_mod = type.replace("momentum", "")
         # volaility nromalized return formula
-        normalized_return = (compounded_momentum/tick_df[f"Vol_{type_mod}"].iloc[-1])*target_vola
+        normalized_return = ((compounded_momentum/100)/tick_df[f"Vol_{type_mod}"].iloc[-1])*target_vola
         norm_re_list.append(normalized_return)
 
         # load value in main dataframe
@@ -236,7 +236,7 @@ def main():
     end_ = str(date.today())
     start_adj = pd.to_datetime(end_) - pd.DateOffset(years=1)
 
-    # a list for the volatility of stocks for ONE sector, later integrated into volatility_frame
+    # a list for the volatility of stocks for ONE sectzzor, later integrated into volatility_frame
     volatility_list = [] 
     volatility_baseline = 0.0
     volatility_baseline_bond = 0.0
@@ -335,7 +335,9 @@ def main():
     main_frame['recap'] = main_frame['Weighted_HQM']*main_frame['Weighted_invert_vola']
     main_frame['true_weight'] = main_frame['recap'] /main_frame['recap'].sum()
 
-    main_frame = main_frame.drop(columns=['Weighted_HQM', 'Invert_vola', 'Weighted_invert_vola', 'recap'])
+    main_frame = main_frame.drop(columns=['Weighted_HQM', 'Invert_vola', 'Weighted_invert_vola', \
+                                          '1MOmomentumScore', '3MOmomentumScore', '6MOmomentumScore',\
+                                          '1YRmomentumScore', 'recap'])
 
     # test o/p
     save_df_csv(main_frame, "main")
