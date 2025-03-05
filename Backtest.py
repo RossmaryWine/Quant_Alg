@@ -269,7 +269,7 @@ def main():
     print("SPY volatility: ", volatility_baseline)
     # select attractive ETFS from SP sectors
     vola_filter(sect_list, volatility_list, volatility_baseline, start_adj, end_, 0.025)
-    
+
     # calc bond vola
     trash, volatility_baseline_bond = calc_vola(bond_list[0], start_adj, end_)
     print(f"AGG volatiltiy: {volatility_baseline_bond}")
@@ -281,7 +281,7 @@ def main():
     print(f"DBC volatiltiy: {volatility_baseline_com}")
     del trash
     vola_filter(com_list, volatility_list, volatility_baseline_com, start_adj, end_, 0.025)
-    
+
     print("lower vola: ")
     for i in volatility_list:
         print(i)
@@ -304,11 +304,11 @@ def main():
         #           normalized return with or without inflation
         # 10 different senarios to test out when backtesting
         calc_momemtum(list_tick[i], df_list[i], main_frame, start_adj, end_)
-        
+ 
     # calc momentum score, aka the percentile rank for every ticker in the 4 momentum catagories
     for type in momentum_diff_dict.keys():
         main_frame[f"{type}Score"] = main_frame[type].rank(pct=True) * 100
-    
+
     # calc HQM score for each ticker using the mean of the 4 momentum catagories
     for row in main_frame.index:
         mean_list = []
