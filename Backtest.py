@@ -21,6 +21,14 @@ momentum_diff_dict = {
     "1YRmomentum" : 12
     }
 
+
+def get_money_supply(end_):
+
+    M1 = web.DataReader("WM1NS", "fred", pd.to_datetime(end_) - pd.Timedelta(days=32), end_)
+    #print(M1["WM1NS"].iloc[-1])
+    return M1["WM1NS"].iloc[-1]
+
+
 def calc_vola(tick, start_date, end_date, periods = {'1MO' : 20, '3MO' : 60, '6MO' : 120, '1YR' : 252}):
     # get SPY from yfinance 91-25
     ticker = yf.Ticker(tick)
@@ -78,8 +86,8 @@ def calc_vola(tick, start_date, end_date, periods = {'1MO' : 20, '3MO' : 60, '6M
     for name, i in periods.items():
         actual_day = min(i, len(default_df))
         default_df[f"Vol_{name}"] = (
-                default_df[f"Total_Return_{tick}"].rolling(window=actual_day, min_periods=int(0.5*actual_day))\
-                .std()*np.sqrt(252/actual_day)
+                np.std(default_df[f"Total_Return_{tick}"].iloc[-actual_day:])\
+                *np.sqrt(actual_day)*np.sqrt(252/actual_day)
                 )
     volatility = np.std(default_df[f"Total_Return_{tick}"].dropna()) * np.sqrt(252)
     
@@ -160,7 +168,7 @@ def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
                                                          np.log(1 + tick_df["Inflation_DoD"]/100)
     
     # variables for normalized return
-    target_vola = 0.1
+    target_vola = 0.08
     norm_re_list = []
     
     # loop through key value pair in dict
@@ -172,6 +180,7 @@ def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
         lookback = end_date - pd.DateOffset(months=month)
         # if the current start date is not present, go back by one row and lock the next available date
         lookback_index = (tick_df["Date"] - lookback).abs().idxmin() # Gets the first available row after lookback
+        #lookback_index = tick_df[tick_df["Date"] <= lookback].index[-1]
 
         # calculate the respective cumulative momentum using the cumulative momentum formula
 
@@ -193,7 +202,7 @@ def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
     norm_mean_re = mean(norm_re_list)
     main_df.loc[main_df['ticker'] == ticker, 'Norm_return'] = norm_mean_re
 
-    if ticker == "BKLN":
+    if ticker == "GLD":
         save_df_csv(tick_df, ticker)
     
     # this code does not work due to the fact that percentileofscore() requires every ticker to be populated before running
@@ -241,11 +250,13 @@ def main():
     volatility_baseline = 0.0
     volatility_baseline_bond = 0.0
     volatility_baseline_com = 0.0
+    m1 = get_money_supply(end_)
 
+    #"""
     # read from FRED for CPI values for the US for the past year
     # the months = 14 could be a subject to change in the future since this is to buffer that this month
     # CPI hasn't come out yet and we need another month of values in order to do YtoY calculation
-    cpi = web.DataReader("CPIAUCSL", "fred", pd.to_datetime(end_) - pd.DateOffset(months=14), end_)
+    cpi = web.DataReader("CPIAUCSL", "fred", pd.to_datetime(end_) - pd.DateOffset(months=15), end_)
     cpi["Inflation_YoY"] = (cpi["CPIAUCSL"].pct_change(12) * 100).fillna(0)  # Year-over-Year Inflation
     cpi["Inflation_MoM"] = (cpi["CPIAUCSL"].pct_change() * 100).fillna(0)   # MtoM inflation
     save_df_csv(cpi, "cpi")
@@ -263,7 +274,7 @@ def main():
     cpi = cpi.set_index("Date")
     # save_df_csv(cpi, "cpi2")
 
-    # """
+    
     # calc SP volatility
     trash, volatility_baseline = calc_vola(sect_list[0], start_adj, end_)
     print("SPY volatility: ", volatility_baseline)
