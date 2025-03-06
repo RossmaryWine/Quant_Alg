@@ -86,27 +86,35 @@ def calc_vola(tick, start_date, end_date, periods = {'1MO' : 20, '3MO' : 60, '6M
     for name, i in periods.items():
         actual_day = min(i, len(default_df))
         default_df[f"Vol_{name}"] = (
+                # important, the formula for volatility calculation is:
+                # std(return over selected period) X root(SELECTED PERIOD)
+                # and to annualize it for consistency, multiply again with 
+                # root(252/selected period)
+                # could also consider rolling().std() if needed, instead of all same value as most recent value
                 np.std(default_df[f"Total_Return_{tick}"].iloc[-actual_day:])\
                 *np.sqrt(actual_day)*np.sqrt(252/actual_day)
                 )
+    
+    # standard annualized vola calc, same as the 1 yr vola
     volatility = np.std(default_df[f"Total_Return_{tick}"].dropna()) * np.sqrt(252)
     
     return default_df, volatility
 
-
+# first selection of competitive tickers from their vola benchmarks
 def vola_filter(ETF_list, vola_list, baseline, start, end, filter_val):
     temp_df = pd.DataFrame()
     for i in range(1, len(ETF_list)):
 
         temp_df, volatility = calc_vola(ETF_list[i], start, end)
-
-        # print(f"{bond_list[i]}: {volatility}")
+        if temp_df.empty:
+            continue
+        
+        # qualifiable tickers in 1st selection
         if (volatility <= (baseline + filter_val)):
-            # nomralize retrurn here
             vola_list.append((ETF_list[i], volatility))
             df_list.append(temp_df)
 
-        # to prevent the unlikely event that yahoo finance shuts down overly fast access
+        # to prevent the unlikely event of yahoo finance timeouts due to overly fast access
         time.sleep(0.2)
 
 
@@ -168,7 +176,7 @@ def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
                                                          np.log(1 + tick_df["Inflation_DoD"]/100)
     
     # variables for normalized return
-    target_vola = 0.08
+    target_vola = 0.1 # subject to change
     norm_re_list = []
     
     # loop through key value pair in dict
@@ -182,16 +190,16 @@ def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
         lookback_index = (tick_df["Date"] - lookback).abs().idxmin() # Gets the first available row after lookback
         #lookback_index = tick_df[tick_df["Date"] <= lookback].index[-1]
 
-        # calculate the respective cumulative momentum using the cumulative momentum formula
-
+        # splice
         temp_df = tick_df.iloc[lookback_index:end_index + 1]
         
+        # calculate the respective cumulative momentum using the cumulative momentum formula
         log_momentum = temp_df[f'Inflation_Adjusted_Log_Return_{ticker}'].sum()
         compounded_momentum = (np.exp(log_momentum) - 1)*100  # Convert back to percentage
 
         #calculates the normalized return
         type_mod = type.replace("momentum", "")
-        # volaility nromalized return formula
+        # volaility nromalized return formula, divide momentum cuz its not percentage yet
         normalized_return = ((compounded_momentum/100)/tick_df[f"Vol_{type_mod}"].iloc[-1])*target_vola
         norm_re_list.append(normalized_return)
 
@@ -204,15 +212,6 @@ def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
 
     if ticker == "GLD":
         save_df_csv(tick_df, ticker)
-    
-    # this code does not work due to the fact that percentileofscore() requires every ticker to be populated before running
-    # otherwise it does not work. the score calculation step and the follow up is forced into main()
-    """
-    for type, month in momemtum_diff_dict.items():
-        main_df.loc[main_df['ticker'] == ticker, f"{type}Score"] = \
-        stats.percentileofscore(main_df[type], main_df.loc[main_df['ticker'] == ticker, type].values[0])
-        print(stats.percentileofscore(main_df[type], main_df.loc[main_df['ticker'] == ticker, type].values[0]))
-    """
 
 
 def main():
@@ -332,23 +331,24 @@ def main():
     main_frame = main_frame[:8]
     main_frame = main_frame.reset_index()
 
-    # weighted average with both volatility and momentum
-    # custom calculation that slightly boosts the ave of etfs that show resilience to inflation
-    #main_frame['Weighted_HQM'] = \
-    #(main_frame['HQM'] * (1 + cpi["Inflation_MoM"].mean() / 100)) / main_frame['HQM'].sum()
-    main_frame['Weighted_HQM'] = main_frame['HQM'] / main_frame['HQM'].sum()
+    # normalize HQM and volatility-adjusted return into the same scale with min-max tech
+    # the min-max is modified with epslion to prevent the bounded 0 and 1 occuring
+    epsilon = 0.02
+    main_frame['norm_HQM'] = epsilon + (1 - 2*epsilon)*(main_frame["HQM"] - main_frame["HQM"].min())\
+                            /(main_frame["HQM"].max() - main_frame["HQM"].min())
+    main_frame['Norm_norm_return'] = epsilon + (1 - 2*epsilon)*(main_frame["Norm_return"] \
+                                     - main_frame["Norm_return"].min())/(main_frame["Norm_return"].max()\
+                                     - main_frame["Norm_return"].min())
+    
+    # weight comprised of both HQM and normalized return, with a slight bias towards HQM
+    main_frame['get_weight'] = 0.55*main_frame["norm_HQM"] + 0.45*main_frame["Norm_norm_return"]
 
-    # weighted ave for vola
-    main_frame['Invert_vola'] = 1 / main_frame['vola'] 
-    main_frame["Weighted_invert_vola"] = main_frame['Invert_vola'] / main_frame['Invert_vola'].sum()
+    #weighted average
+    main_frame['true_weight'] = main_frame["get_weight"]/main_frame["get_weight"].sum()
 
-    #combine the weighted ave for momentum and vola to get the true final weight on each etf
-    main_frame['recap'] = main_frame['Weighted_HQM']*main_frame['Weighted_invert_vola']
-    main_frame['true_weight'] = main_frame['recap'] /main_frame['recap'].sum()
-
-    main_frame = main_frame.drop(columns=['Weighted_HQM', 'Invert_vola', 'Weighted_invert_vola', \
+    main_frame = main_frame.drop(columns=[\
                                           '1MOmomentumScore', '3MOmomentumScore', '6MOmomentumScore',\
-                                          '1YRmomentumScore', 'recap'])
+                                          '1YRmomentumScore'])
 
     # test o/p
     save_df_csv(main_frame, "main")
