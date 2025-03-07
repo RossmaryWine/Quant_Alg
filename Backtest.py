@@ -28,7 +28,7 @@ def get_money_supply(end_):
     #print(M1["WM1NS"].iloc[-1])
     return M1["WM1NS"].iloc[-1]
 
-
+# populate df_list first before running the calc_vola function
 def calc_vola(tick, start_date, end_date, periods = {'1MO' : 20, '3MO' : 60, '6MO' : 120, '1YR' : 252}):
     # get ticker info from current selected time to a year from then
     ticker = yf.Ticker(tick)
@@ -331,7 +331,7 @@ def main():
 
     # sort and splice
     main_frame.sort_values('HQM', ascending=False, inplace=True)
-    main_frame = main_frame[:8]
+    main_frame = main_frame[:8] # instead of this, maybe HQM >= 50 
     main_frame = main_frame.reset_index()
 
     # normalize HQM and volatility-adjusted return into the same scale with min-max tech
@@ -349,12 +349,28 @@ def main():
     #weighted average
     main_frame['true_weight'] = main_frame["get_weight"]/main_frame["get_weight"].sum()
 
-    main_frame = main_frame.drop(columns=[\
+    main_frame = main_frame.drop(columns=['norm_HQM', 'Norm_norm_return', 'get_weight',\
                                           '1MOmomentumScore', '3MOmomentumScore', '6MOmomentumScore',\
                                           '1YRmomentumScore'])
 
     # test o/p
     save_df_csv(main_frame, "main")
+
+    #the loop starts
+    # idea: download the maximum/ start date till current timeframe of information
+    # this could be in a dictionary or a hashmap, but a lot of the data structure would change
+    # and separate it from the calc_vola function
+    # - gets the rolling window on the volatility instead of constant
+    # - ask money invested, use this and the weighted average to determine
+    # how many shares of each needed to buy/sell
+    # -each selection: extract the last month worth of data from each of the selected ticker dfs
+    # using the index number to determine element position in df_list
+    # - accumilate shares*(close + dividends) for every selected ETF ticker daily
+    # - get month worth of closing data from the calculation above, since its a chart, append it to 
+    # the output chart
+    # - the frist selection would only have 1 day of data, the subsequent would have a month worth
+
+    # minimize calculation time by using as little functions as possible
 
     return 0
 # """
