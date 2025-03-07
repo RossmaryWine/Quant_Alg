@@ -30,12 +30,12 @@ def get_money_supply(end_):
 
 
 def calc_vola(tick, start_date, end_date, periods = {'1MO' : 20, '3MO' : 60, '6MO' : 120, '1YR' : 252}):
-    # get SPY from yfinance 91-25
+    # get ticker info from current selected time to a year from then
     ticker = yf.Ticker(tick)
-    default_df = yf.download(tick, start_date, end=end_date)
-    if default_df.empty:
+    ticker_df = yf.download(tick, start_date, end=end_date)
+    if ticker_df.index.empty:
         print(f"No data for {ticker}, skipping...")
-        return 100
+        return pd.DataFrame(), 100
 
     # get the dividends of the ticker
     div_ = ticker.dividends
@@ -46,7 +46,7 @@ def calc_vola(tick, start_date, end_date, periods = {'1MO' : 20, '3MO' : 60, '6M
     # this error doesn't occur unless there is nothing in the date column, AKA failed to retrieve data
     except AttributeError:
         print("failed to retrieve info! possibly due to ticker name or yf timing out")
-        return 100
+        return pd.DataFrame(), 100
 
     # extract the dividends of specificed start to end date
     dividends_filtered = div_.loc[start_date:end_date]
@@ -57,57 +57,58 @@ def calc_vola(tick, start_date, end_date, periods = {'1MO' : 20, '3MO' : 60, '6M
     dividends_df.columns = ["Date", "Dividends"] # set the columns
 
     # Merge with stock price data
-    default_df = default_df.reset_index()
+    ticker_df = ticker_df.reset_index()
 
     # the ticker df defaults to a bunch of multi-indexes, to merge later with dividend df, have to convert 
     # the multi-indexes into normal ones, we go through all columns and join the pairs with _(chatGPT)
-    default_df.columns = ['_'.join(col).strip() if isinstance(col, tuple)\
-                        else col for col in default_df.columns]
+    ticker_df.columns = ['_'.join(col).strip() if isinstance(col, tuple)\
+                        else col for col in ticker_df.columns]
     # reset the Date_ column after conjointing, there is a pair column for some reason that looks like ('Date', '')
-    default_df.rename(columns={"Date_": "Date"}, inplace=True)
+    ticker_df.rename(columns={"Date_": "Date"}, inplace=True)
 
     # reset index again
-    default_df = default_df.reset_index()
+    ticker_df = ticker_df.reset_index()
     # print(based.columns) debug statement
 
     # merge 2 dfs with Date column as the merge key and add matching dividends rows, if none dividend = NaN(left join)
-    default_df = default_df.merge(dividends_df, on="Date", how="left")
+    ticker_df = ticker_df.merge(dividends_df, on="Date", how="left")
 
     # Fill missing dividend values with 0
-    default_df.fillna({"Dividends" : 0}, inplace=True)
+    ticker_df.fillna({"Dividends" : 0}, inplace=True)
 
     # use the total return formula on every single row: (Pend + D - Pstart)/Pstart
     # first row no value, replace with 0
-    default_df[f"Total_Return_{tick}"] = [((default_df[f"Close_{tick}"][i] + default_df["Dividends"][i] - \
-                                            default_df[f"Close_{tick}"][i - 1])/default_df[f"Close_{tick}"][i - 1]) \
-                                            if i != 0 else 0 for i in range(len(default_df[f"Close_{tick}"]))]
+    ticker_df[f"Total_Return_{tick}"] = [((ticker_df[f"Close_{tick}"][i] + ticker_df["Dividends"][i] - \
+                                            ticker_df[f"Close_{tick}"][i - 1])/ticker_df[f"Close_{tick}"][i - 1]) \
+                                            if i != 0 else 0 for i in range(len(ticker_df[f"Close_{tick}"]))]
 
     # use the volatility formula to get vola
     for name, i in periods.items():
-        actual_day = min(i, len(default_df))
-        default_df[f"Vol_{name}"] = (
+        actual_day = min(i, len(ticker_df))
+        ticker_df[f"Vol_{name}"] = (
                 # important, the formula for volatility calculation is:
                 # std(return over selected period) X root(SELECTED PERIOD)
                 # and to annualize it for consistency, multiply again with 
                 # root(252/selected period)
                 # could also consider rolling().std() if needed, instead of all same value as most recent value
-                np.std(default_df[f"Total_Return_{tick}"].iloc[-actual_day:])\
+                np.std(ticker_df[f"Total_Return_{tick}"].iloc[-actual_day:])\
                 *np.sqrt(actual_day)*np.sqrt(252/actual_day)
                 )
     
     # standard annualized vola calc, same as the 1 yr vola
-    volatility = np.std(default_df[f"Total_Return_{tick}"].dropna()) * np.sqrt(252)
+    volatility = np.std(ticker_df[f"Total_Return_{tick}"].dropna()) * np.sqrt(252)
     
-    return default_df, volatility
+    return ticker_df, volatility
 
 # first selection of competitive tickers from their vola benchmarks
 def vola_filter(ETF_list, vola_list, baseline, start, end, filter_val):
     temp_df = pd.DataFrame()
     for i in range(1, len(ETF_list)):
-
+        #try:
         temp_df, volatility = calc_vola(ETF_list[i], start, end)
-        if temp_df.empty:
-            continue
+        #except TypeError: # ticker dataframe is empty
+            #print("no data present, too early/late or wrong ticker name")
+            #continue
         
         # qualifiable tickers in 1st selection
         if (volatility <= (baseline + filter_val)):
@@ -224,7 +225,8 @@ def main():
     
     # list of bond ETFs, first one is baseline
     bond_list = ["AGG", "BKLN", "EMB", "LQD", "HYG", "MBB", "MUB", "TLT", "VCIT", "VTEB", "VCSH",\
-                 "SGOV", "BSV", "IUSB", "IEF", "VGIT", "BIL"]
+                 "SGOV", "BSV", "IUSB", "IEF", "VGIT", "BIL", "BND", "JPST", "GOVT", "SHY", "JAAA",\
+                 "USHY", "TMF", "SPIB", "SHV"]
 
     # list of commodity ETFs
     com_list = ["DBC", "IBIT", "CPER", "CWB", "DBA", "DBB", "DBO", "GLD", "PALL", "PPLT", "SLV", \
@@ -242,6 +244,7 @@ def main():
 
     start_ = "1991-01-01"
     end_ = str(date.today())
+    end_ = "2009-01-01"
     start_adj = pd.to_datetime(end_) - pd.DateOffset(years=1)
 
     # a list for the volatility of stocks for ONE sectzzor, later integrated into volatility_frame
