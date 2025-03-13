@@ -11,7 +11,7 @@ import pandas_datareader.data as web
 
 # note to self: mean() takes in one list of some sort, NOT multiple values
 
-df_list = []
+df_dict = {}
 cpi = pd.DataFrame(columns=['CPIAUCSL', 'Inflation_YoY', 'Inflation_MoM'])
 # dict containing the different lookback periods for momentum and normalized return calulation
 momentum_diff_dict = {
@@ -22,101 +22,182 @@ momentum_diff_dict = {
     }
 
 
-def get_money_supply(end_):
+# remaking the elements within the df_dict into a class
+# pass the elements into the class attributes instead of hotwiring them every time
+# 
+class TickData:
 
-    M1 = web.DataReader("WM1NS", "fred", pd.to_datetime(end_) - pd.Timedelta(days=32), end_)
-    #print(M1["WM1NS"].iloc[-1])
-    return M1["WM1NS"].iloc[-1]
 
-# populate df_list first before running the calc_vola function
-def calc_vola(tick, start_date, end_date, periods = {'1MO' : 20, '3MO' : 60, '6MO' : 120, '1YR' : 252}):
-    # get ticker info from current selected time to a year from then
-    ticker = yf.Ticker(tick)
-    ticker_df = yf.download(tick, start_date, end=end_date)
-    if ticker_df.index.empty:
-        print(f"No data for {ticker}, skipping...")
-        return pd.DataFrame(), 100
+    def __init__(self, start, end, ticker):
+        self.start = start
+        self.end = end
+        self.tick = ticker
+        self.tick_df = pd.DataFrame()
+        self.volatility = 0
+        self.HQM = 0
+        self.vola_adj_re = 0
+        self.M1 = 0
 
-    # get the dividends of the ticker
-    div_ = ticker.dividends
 
-    #remove timezone from it being new york
-    try:
-        div_.index = div_.index.tz_localize(None)
-    # this error doesn't occur unless there is nothing in the date column, AKA failed to retrieve data
-    except AttributeError:
-        print("failed to retrieve info! possibly due to ticker name or yf timing out")
-        return pd.DataFrame(), 100
+    def get_money_supply(self):
+        # reading the last bit of the M1 data for US(most recent)
+        M1 = web.DataReader("WM1NS", "fred", pd.to_datetime(self.end) - pd.Timedelta(days=60), self.end)
+        self.M1 = M1
+        return M1["WM1NS"].iloc[-1]
 
-    # extract the dividends of specificed start to end date
-    dividends_filtered = div_.loc[start_date:end_date]
-    # total_dividends = dividends_filtered.sum()
 
-    # Convert dividends to DataFrame
-    dividends_df = dividends_filtered.to_frame().reset_index()
-    dividends_df.columns = ["Date", "Dividends"] # set the columns
-
-    # Merge with stock price data
-    ticker_df = ticker_df.reset_index()
-
-    # the ticker df defaults to a bunch of multi-indexes, to merge later with dividend df, have to convert 
-    # the multi-indexes into normal ones, we go through all columns and join the pairs with _(chatGPT)
-    ticker_df.columns = ['_'.join(col).strip() if isinstance(col, tuple)\
-                        else col for col in ticker_df.columns]
-    # reset the Date_ column after conjointing, there is a pair column for some reason that looks like ('Date', '')
-    ticker_df.rename(columns={"Date_": "Date"}, inplace=True)
-
-    # reset index again
-    ticker_df = ticker_df.reset_index()
-    # print(based.columns) debug statement
-
-    # merge 2 dfs with Date column as the merge key and add matching dividends rows, if none dividend = NaN(left join)
-    ticker_df = ticker_df.merge(dividends_df, on="Date", how="left")
-
-    # Fill missing dividend values with 0
-    ticker_df.fillna({"Dividends" : 0}, inplace=True)
-
-    # use the total return formula on every single row: (Pend + D - Pstart)/Pstart
-    # first row no value, replace with 0
-    ticker_df[f"Total_Return_{tick}"] = [((ticker_df[f"Close_{tick}"][i] + ticker_df["Dividends"][i] - \
-                                            ticker_df[f"Close_{tick}"][i - 1])/ticker_df[f"Close_{tick}"][i - 1]) \
-                                            if i != 0 else 0 for i in range(len(ticker_df[f"Close_{tick}"]))]
-
-    # use the volatility formula to get vola
-    for name, i in periods.items():
-        actual_day = min(i, len(ticker_df))
-        ticker_df[f"Vol_{name}"] = (
-                # important, the formula for volatility calculation is:
-                # std(return over selected period) X root(SELECTED PERIOD)
-                # and to annualize it for consistency, multiply again with 
-                # root(252/selected period)
-                # could also consider rolling().std() if needed, instead of all same value as most recent value
-                np.std(ticker_df[f"Total_Return_{tick}"].iloc[-actual_day:])\
-                *np.sqrt(actual_day)*np.sqrt(252/actual_day)
-                )
-    
-    # standard annualized vola calc, same as the 1 yr vola
-    volatility = np.std(ticker_df[f"Total_Return_{tick}"].dropna()) * np.sqrt(252)
-    
-    return ticker_df, volatility
-
-# first selection of competitive tickers from their vola benchmarks
-def vola_filter(ETF_list, vola_list, baseline, start, end, filter_val):
-    temp_df = pd.DataFrame()
-    for i in range(1, len(ETF_list)):
-        #try:
-        temp_df, volatility = calc_vola(ETF_list[i], start, end)
-        #except TypeError: # ticker dataframe is empty
-            #print("no data present, too early/late or wrong ticker name")
-            #continue
+    def scrape_tick(self):
+        # get ticker info from current selected time to a year from then
+        ticker = yf.Ticker(self.tick)
+        # there is a slight bug that makes yf extract a few days less of data than what is required. future possible fix ticket
+        ticker_df = yf.download(self.tick, start=self.start, end=self.end, interval='1d')
+        if ticker_df.index.empty:
+            print(f"No data for {ticker}, skipping...")
+            self.tick_df = pd.DataFrame()
+            self.volatility = 1000
+            return 1
         
-        # qualifiable tickers in 1st selection
-        if (volatility <= (baseline + filter_val)):
-            vola_list.append((ETF_list[i], volatility))
-            df_list.append(temp_df)
+        # get the dividends of the ticker
+        div_ = ticker.dividends
 
-        # to prevent the unlikely event of yahoo finance timeouts due to overly fast access
-        time.sleep(0.2)
+        #remove timezone from it being new york
+        try:
+            div_.index = div_.index.tz_localize(None)
+        # this error doesn't occur unless there is nothing in the date column, AKA failed to retrieve data
+        except AttributeError:
+            print("failed to retrieve info! possibly due to ticker name or yf timing out")
+            self.tick_df = pd.DataFrame()
+            self.volatility = 1000
+            return 2
+
+        # extract the dividends of specificed start to end date
+        dividends_filtered = div_.loc[self.start:self.end]
+        # total_dividends = dividends_filtered.sum()
+
+        # Convert dividends to DataFrame
+        dividends_df = dividends_filtered.to_frame().reset_index()
+        dividends_df.columns = ["Date", "Dividends"] # set the columns
+
+        # reset index
+        ticker_df = ticker_df.reset_index()
+
+        # the ticker df defaults to a bunch of multi-indexes, to merge later with dividend df, have to convert 
+        # the multi-indexes into normal ones, we go through all columns and join the pairs with _(chatGPT)
+        ticker_df.columns = ['_'.join(col).strip() if isinstance(col, tuple)\
+                            else col for col in ticker_df.columns]
+        # reset the Date_ column after conjointing, there is a pair column for some reason that looks like ('Date', '')
+        ticker_df.rename(columns={"Date_": "Date"}, inplace=True)
+
+        # reset index again
+        ticker_df = ticker_df.reset_index()
+        # print(based.columns) debug statement
+
+        # merge 2 dfs with Date column as the merge key and add matching dividends rows, if none dividend = NaN(left join)
+        ticker_df = ticker_df.merge(dividends_df, on="Date", how="left")
+
+        # Fill missing dividend values with 0
+        ticker_df.fillna({"Dividends" : 0}, inplace=True)
+
+        # use the total return formula on every single row: (Pend + D - Pstart)/Pstart
+        # first row no value, replace with 0
+        ticker_df[f"Total_Return_{self.tick}"] = [((ticker_df[f"Close_{self.tick}"][i] + ticker_df["Dividends"][i] - \
+                                                ticker_df[f"Close_{self.tick}"][i - 1])/ticker_df[f"Close_{self.tick}"][i - 1]) \
+                                                if i != 0 else 0 for i in range(len(ticker_df[f"Close_{self.tick}"]))]
+        
+        self.tick_df = ticker_df
+        self.tick_df["Date"] = pd.to_datetime(self.tick_df["Date"])
+        self.tick_df.set_index("Date", inplace=True)
+        return 0
+
+
+    def calc_vola(self, periods = {'1MO' : 21, '3MO' : 60, '6MO' : 120, '1YR' : 252}):
+        start_adj = pd.to_datetime(self.end) - pd.DateOffset(years=1)
+        ticker_df = self.tick_df.loc[start_adj:self.end].copy()
+        # use the volatility formula to get vola
+        for name, i in periods.items():
+            actual_day = min(i, len(ticker_df))
+            self.tick_df[f"Vol_{name}"] = (
+                    # important, the formula for volatility calculation is:
+                    # std(return over selected period) X root(SELECTED PERIOD)
+                    # and to annualize it for consistency, multiply again with 
+                    # root(252/selected period)
+                    # could also consider rolling().std() if needed, instead of all same value as most recent value
+                    np.std(ticker_df[f"Total_Return_{self.tick}"].iloc[-actual_day:])\
+                    *np.sqrt(actual_day)*np.sqrt(252/actual_day)
+                    )
+        
+        # standard annualized vola calc, same as the 1 yr vola
+        # self.tick_df = ticker_df
+        self.volatility = np.std(ticker_df[f"Total_Return_{self.tick}"].dropna()) * np.sqrt(252)
+
+
+    def calc_momentum(self, main_df):
+        global cpi
+        global momentum_diff_dict
+
+        # Merge CPI data using index instead of 'Date' column
+        self.tick_df = self.tick_df.merge(cpi[["Inflation_YoY"]], left_index=True, right_index=True, how="left")
+        self.tick_df = self.tick_df.merge(cpi[["Inflation_MoM"]], left_index=True, right_index=True, how="left")
+
+        # Fill missing values
+        self.tick_df["Inflation_YoY"] = self.tick_df["Inflation_YoY"].ffill()
+        self.tick_df["Inflation_MoM"] = self.tick_df["Inflation_MoM"].ffill()
+
+        # Convert start and end dates to datetime
+        self.start = pd.to_datetime(self.start)
+        self.end = pd.to_datetime(self.end)
+
+        # Adjust start and end based on available data
+        if self.tick_df.index[0] > self.start:
+            self.start = self.tick_df.index[0]
+
+        if self.tick_df.index[-1] < self.end:
+            self.end = self.tick_df.index[-1]
+
+        # Count rows within the time slot
+        count_rows = self.tick_df.loc[self.start:self.end].shape[0]
+
+        if count_rows < 248:
+            print("Not enough time for full momentum calculation!")
+            return -1
+
+        # Compute inflation-adjusted log returns
+        self.tick_df["Inflation_DoD"] = (1 + self.tick_df["Inflation_MoM"] / 100) ** (1 / 21) - 1
+        self.tick_df[f'Inflation_Adjusted_Log_Return_{self.tick}'] = np.log(1 + self.tick_df[f'Total_Return_{self.tick}']) 
+
+        target_vola = 0.1  # Target volatility
+        norm_re_list = []
+
+        for type, month in momentum_diff_dict.items():
+            # Get the last available date before self.end
+            end_index = self.tick_df.index.get_loc(self.end)  # Finds position of end date in index
+
+            # Find the closest available date for the lookback period
+            lookback = self.end - pd.DateOffset(months=month)
+            lookback_index = self.tick_df.index.get_loc(self.tick_df.index[self.tick_df.index.get_indexer([lookback], method="nearest")[0]])
+
+            # Splice the dataframe using index positions
+            temp_df = self.tick_df.iloc[lookback_index:end_index + 1]
+
+            # Calculate cumulative momentum
+            log_momentum = temp_df[f'Inflation_Adjusted_Log_Return_{self.tick}'].sum()
+            compounded_momentum = (np.exp(log_momentum) - 1) * 100  # Convert back to percentage
+
+            # Normalize return using volatility
+            type_mod = type.replace("momentum", "")
+            normalized_return = ((compounded_momentum / 100) / self.tick_df[f"Vol_{type_mod}"].iloc[-1]) * target_vola
+            norm_re_list.append(normalized_return)
+
+            # Store value in main dataframe
+            main_df.loc[main_df['ticker'] == self.tick, type] = compounded_momentum
+
+        # Store mean normalized return
+        norm_mean_re = mean(norm_re_list)
+        main_df.loc[main_df['ticker'] == self.tick, 'Norm_return'] = norm_mean_re
+
+        # Debugging: Save CSV if it's GLD
+        if self.tick == "GLD":
+            save_df_csv(self.tick_df, self.tick)
 
 
 def save_df_csv(df, tick):
@@ -139,85 +220,9 @@ def extract_csv(tick):
     return df
 
 
-# this function not only calcs the momentum but also the normalized return, subject to change
-def calc_momemtum(ticker, tick_df, main_df, start_date, end_date):
-    global cpi
-    global momentum_diff_dict
-    # shouldn't need this
-    # tick_df[f"Total_Return_{ticker}"] = tick_df[f"Total_Return_{ticker}"].replace(0, np.nan).ffill()
-
-    # Merge CPI data (resample to match ETF data frequency)
-    tick_df = tick_df.merge(cpi[["Inflation_YoY"]], left_on="Date", right_index=True, how="left")
-    tick_df = tick_df.merge(cpi[["Inflation_MoM"]], left_on="Date", right_index=True, how="left")
-
-    # Fill missing values (e.g., weekends/holidays)
-    tick_df["Inflation_YoY"] = tick_df["Inflation_YoY"].ffill()
-    tick_df["Inflation_MoM"] = tick_df["Inflation_MoM"].ffill()
-    
-    # lock to earliest available start date if start timeframe does not exist
-    start_date = pd.to_datetime(start_date)
-    if (tick_df["Date"].iloc[0] > start_date):
-        start_date = tick_df["Date"].iloc[0]
-    
-    # lock to latest available end date if end timeframe does not exist
-    end_date = pd.to_datetime(end_date)
-    if (tick_df["Date"].iloc[-1] < end_date):
-        end_date = tick_df["Date"].iloc[-1]
-
-    # bitwise and all rows within the timeslot
-    count_rows = tick_df[(tick_df['Date'] >= start_date) & (tick_df['Date'] <= end_date)].shape[0]
-
-    if(count_rows < 248):
-        print("not enough time for full momentum calculation!")
-        return -1
-    
-    # Compute log returns to ensure compounding and adjust for inflation
-    tick_df["Inflation_DoD"] = (1 + tick_df["Inflation_MoM"] / 100) ** (1 / 21) - 1
-    tick_df[f'Inflation_Adjusted_Log_Return_{ticker}'] = np.log(1 + tick_df[f'Total_Return_{ticker}']) - \
-                                                         np.log(1 + tick_df["Inflation_DoD"]/100)
-    
-    # variables for normalized return
-    target_vola = 0.1 # subject to change
-    norm_re_list = []
-    
-    # loop through key value pair in dict
-    for type, month in momentum_diff_dict.items():
-
-        end_index = tick_df[tick_df["Date"] <= end_date].index[-1]  # Gets the last available row before end_date
-
-        # use timedelta to locate the available start date 
-        lookback = end_date - pd.DateOffset(months=month)
-        # if the current start date is not present, go back by one row and lock the next available date
-        lookback_index = (tick_df["Date"] - lookback).abs().idxmin() # Gets the first available row after lookback
-        #lookback_index = tick_df[tick_df["Date"] <= lookback].index[-1]
-
-        # splice
-        temp_df = tick_df.iloc[lookback_index:end_index + 1]
-        
-        # calculate the respective cumulative momentum using the cumulative momentum formula
-        log_momentum = temp_df[f'Inflation_Adjusted_Log_Return_{ticker}'].sum()
-        compounded_momentum = (np.exp(log_momentum) - 1)*100  # Convert back to percentage
-
-        #calculates the normalized return
-        type_mod = type.replace("momentum", "")
-        # volaility nromalized return formula, divide momentum cuz its not percentage yet
-        normalized_return = ((compounded_momentum/100)/tick_df[f"Vol_{type_mod}"].iloc[-1])*target_vola
-        norm_re_list.append(normalized_return)
-
-        # load value in main dataframe
-        main_df.loc[main_df['ticker'] == ticker, type] = compounded_momentum
-
-    # mean of different periods of normalized return
-    norm_mean_re = mean(norm_re_list)
-    main_df.loc[main_df['ticker'] == ticker, 'Norm_return'] = norm_mean_re
-
-    if ticker == "GLD":
-        save_df_csv(tick_df, ticker)
-
-
 def main():
     #list of SPX sectors including SPX itself
-    global df_list
+    global df_dict
     global cpi
     global momentum_diff_dict
     SP_INDEX = "^GSPC"
@@ -225,7 +230,7 @@ def main():
     
     # list of bond ETFs, first one is baseline
     bond_list = ["AGG", "BKLN", "EMB", "LQD", "HYG", "MBB", "MUB", "TLT", "VCIT", "VTEB", "VCSH",\
-                 "SGOV", "BSV", "IUSB", "IEF", "VGIT", "BIL", "BND", "JPST", "GOVT", "SHY", "JAAA",\
+                 "SGOV", "BSV", "IUSB", "IEF", "VGIT", "BIL", "BND", "GOVT", "SHY", "JAAA",\
                  "USHY", "TMF", "SPIB", "SHV"]
 
     # list of commodity ETFs
@@ -244,21 +249,20 @@ def main():
 
     start_ = "1991-01-01"
     end_ = str(date.today())
-    end_ = "2009-01-01"
-    start_adj = pd.to_datetime(end_) - pd.DateOffset(years=1)
+    #end_ = "2009-01-01"
+    start_adj = pd.to_datetime(end_) - pd.DateOffset(years=2, days=5)
 
     # a list for the volatility of stocks for ONE sectzzor, later integrated into volatility_frame
     volatility_list = [] 
     volatility_baseline = 0.0
     volatility_baseline_bond = 0.0
     volatility_baseline_com = 0.0
-    m1 = get_money_supply(end_)
 
-    #"""
     # read from FRED for CPI values for the US for the past year
     # the months = 14 could be a subject to change in the future since this is to buffer that this month
     # CPI hasn't come out yet and we need another month of values in order to do YtoY calculation
-    cpi = web.DataReader("CPIAUCSL", "fred", pd.to_datetime(end_) - pd.DateOffset(months=15), end_)
+    # pd.to_datetime(end_) - pd.DateOffset(months=15)
+    cpi = web.DataReader("CPIAUCSL", "fred", start_, end_)
     cpi["Inflation_YoY"] = (cpi["CPIAUCSL"].pct_change(12) * 100).fillna(0)  # Year-over-Year Inflation
     cpi["Inflation_MoM"] = (cpi["CPIAUCSL"].pct_change() * 100).fillna(0)   # MtoM inflation
     save_df_csv(cpi, "cpi")
@@ -276,39 +280,59 @@ def main():
     cpi = cpi.set_index("Date")
     # save_df_csv(cpi, "cpi2")
 
+    """
+    df = TickData(start_adj, end_, "XLU")
+    df.scrape_tick()
+    df.calc_vola()
+    print(df.volatility)
+    save_df_csv(df.tick_df, 'XLU')"""
     
-    # calc SP volatility
-    trash, volatility_baseline = calc_vola(sect_list[0], start_adj, end_)
-    print("SPY volatility: ", volatility_baseline)
-    # select attractive ETFS from SP sectors
-    vola_filter(sect_list, volatility_list, volatility_baseline, start_adj, end_, 0.025)
+    ETF_pool = sect_list + bond_list + com_list
+    for i in ETF_pool:
+        df = TickData(start_adj, end_, i)
+        df.scrape_tick()
+        df_dict[i] = df
+    
+    for i in ETF_pool:
+        df_dict[i].calc_vola()
+        if(i == "SPY"):
+            volatility_baseline = df_dict[i].volatility
+            print(df_dict[i].volatility)
+        elif(i == 'AGG'):
+            volatility_baseline_bond = df_dict[i].volatility
+            print(df_dict[i].volatility)
+        elif(i == 'DBC'):
+            volatility_baseline_com = df_dict[i].volatility
+            print(df_dict[i].volatility)
 
-    # calc bond vola
-    trash, volatility_baseline_bond = calc_vola(bond_list[0], start_adj, end_)
-    print(f"AGG volatiltiy: {volatility_baseline_bond}")
-    # select bond ETFs
-    vola_filter(bond_list, volatility_list, volatility_baseline_bond, start_adj, end_, 0.0175)
-
-    # commodity ETFs
-    trash, volatility_baseline_com = calc_vola(com_list[0], start_adj, end_)
-    print(f"DBC volatiltiy: {volatility_baseline_com}")
-    del trash
-    vola_filter(com_list, volatility_list, volatility_baseline_com, start_adj, end_, 0.025)
+    for i in sect_list[1:]:
+        #print(f"{i} vola: {df_dict[i].volatility}")
+        if (df_dict[i].volatility <= float(1.1*volatility_baseline)):
+            
+            volatility_list.append((i, df_dict[i].volatility))
+    
+    for i in bond_list[1:]:
+        if df_dict[i].volatility <= float(1.1*volatility_baseline_bond):
+            volatility_list.append((i, df_dict[i].volatility))
+    
+    for i in com_list[1:]:
+        if df_dict[i].volatility <= float(1.15*volatility_baseline_com):
+            volatility_list.append((i, df_dict[i].volatility))
 
     print("lower vola: ")
     for i in volatility_list:
         print(i)
-
+    
     # unzip the list of tuple pairs into 2 lists
     list_tick, list_vola = zip(*volatility_list)
     for i in range(len(list_tick)):
         new_row = pd.DataFrame({
-            'ticker' : [list_tick[i]],
-            'vola' : [list_vola[i]]
+            'ticker' : [list_tick[i]], # list of tickers
+            'vola' : [list_vola[i]]     # list of their respective vola
         })
         main_frame = pd.concat([main_frame, new_row], ignore_index = True)
-
-    for i in range(len(list_tick)):
+    
+    for i in list_tick:
 
         # momentum calculation using data spanning from a year ago to today
         # senarios: inflation YoY, 6Mo6M, MoM, WoW, DoD ---
@@ -316,12 +340,12 @@ def main():
         #                                                 V
         #           normalized return with or without inflation
         # 10 different senarios to test out when backtesting
-        calc_momemtum(list_tick[i], df_list[i], main_frame, start_adj, end_)
+        df_dict[i].calc_momentum(main_frame)
  
     # calc momentum score, aka the percentile rank for every ticker in the 4 momentum catagories
     for type in momentum_diff_dict.keys():
         main_frame[f"{type}Score"] = main_frame[type].rank(pct=True) * 100
-
+     
     # calc HQM score for each ticker using the mean of the 4 momentum catagories
     for row in main_frame.index:
         mean_list = []
@@ -355,7 +379,7 @@ def main():
 
     # test o/p
     save_df_csv(main_frame, "main")
-
+    """
     #the loop starts
     # idea: download the maximum/ start date till current timeframe of information
     # this could be in a dictionary or a hashmap, but a lot of the data structure would change
@@ -364,15 +388,15 @@ def main():
     # - ask money invested, use this and the weighted average to determine
     # how many shares of each needed to buy/sell
     # -each selection: extract the last month worth of data from each of the selected ticker dfs
-    # using the index number to determine element position in df_list
+    # using the index number to determine element position in df_dict
     # - accumilate shares*(close + dividends) for every selected ETF ticker daily
     # - get month worth of closing data from the calculation above, since its a chart, append it to 
     # the output chart
     # - the frist selection would only have 1 day of data, the subsequent would have a month worth
 
     # minimize calculation time by using as little functions as possible
-
-    return 0
 # """
+    #return 0
+
 if __name__ == "__main__":
     main()
