@@ -23,6 +23,8 @@ class TickData:
         self.tick = ticker # list
         self.ticker_df = pd.DataFrame()
         self.tot_return = pd.DataFrame()
+        self.volatility = pd.DataFrame()
+        self.momentum = pd.DataFrame()
         self.volatility_baseline = 0
         self.HQM = 0
         self.vola_adj_re = 0
@@ -37,85 +39,55 @@ class TickData:
         if self.ticker_df.index.empty:
             print(f"No data for {tickers}, skipping...")
             self.ticker_df = pd.DataFrame()
-            self.volatility = 1000
             return 1
         
         #filter out useless columns
         self.ticker_df = self.ticker_df[['Close', 'Dividends']]
+        #total return
         self.tot_return = (self.ticker_df['Close'] + self.ticker_df['Dividends']).pct_change()
-        save_df_csv(self.tot_return, 'thisissoshit')
-
-        for ticker in self.tick:  # Assuming ticker_list contains SPY, XLF, etc.
-            self.ticker_df[('temp', ticker)] = self.ticker_df[('Close', ticker)] + self.ticker_df[('Dividends', ticker)]
-            self.ticker_df[('Tot_Return', ticker)] = self.ticker_df[('temp', ticker)].pct_change()
-            self.ticker_df[("Log_Return", ticker)] = np.log1p(self.ticker_df[('Tot_Return', ticker)])
-            #self.ticker_df[("TRI", ticker)] = 100 * np.exp(self.ticker_df[('Log_Return', ticker)].cumsum())
-            self.ticker_df.drop(columns=[('temp', ticker)], inplace=True)
-            #self.ticker_df.drop(columns=[('Tot_Return', ticker)], inplace=True)
-
-        #self.ticker_df = self.ticker_df.fillna(0)
+        #TRI = 100 * np.exp(self.ticker_df['Log_Return'].cumsum())
         
         return 0
 
 
     def calc_vola(self, days=62):
-        for ticker in self.tick:
-            self.ticker_df[('Vol_3M', ticker)] = (
-                    self.ticker_df[("Tot_Return", ticker)].rolling(window=days).std()#*np.sqrt(252)
-                    )
+        self.volatility = self.tot_return.rolling(window=days).std()
+        #save_df_csv(self.volatility, 'vola_test')
 
     def calc_momentum(self, days=62):
+        self.momentum = np.exp(np.log1p(self.tot_return).rolling(window=days).sum()) - 1
+        #save_df_csv(self.momentum, 'momentum_test')
 
-        for i in range(0, len(self.tick)):
-            # convert to simple momentum
-            self.ticker_df[('Sim_Mom_3M', self.tick[i])] = (
-                    np.exp(self.ticker_df[("Log_Return", self.tick[i])].rolling(window=days).sum()) - 1#*np.sqrt(252)
-                    )
-        # reset index for daily return calc
-        save_df_csv(self.ticker_df, "test_tick_all")
-        return 0
-    
 
     def main_df_format(self):
         main_frame = pd.DataFrame()
         # ranking with simple 3 month momentum
-        baseline = self.ticker_df[('Sim_Mom_3M', 'SPY')]
-        self.ticker_df.drop(columns=[('Sim_Mom_3M', 'SPY')], inplace=True)
-        mom_df = self.ticker_df['Sim_Mom_3M']
-        adj_df = self.ticker_df['Vol_3M']
-        close_df = self.ticker_df['Close']
-        main_frame['baseline'] = baseline
+        baseline = self.momentum['SPY']
+        self.momentum.drop(columns=['SPY'], inplace=True)
 
-        tot_weigh = pd.Series(0, index=main_frame.index)
-        for i in range(1, len(self.tick)):
-            mask = mom_df[self.tick[i]] >= baseline # True for eligible tickers
+        baseline = baseline.reindex(self.momentum.index)
+        temp = self.volatility.where(self.momentum > baseline.values[:, None], other=0) 
+        temp2 = self.momentum.where(self.momentum > baseline.values[:, None], other=0)
+        save_df_csv(temp2, 'test_multicolumn_mask')
 
-            # Keep only eligible momentum values
-            eligible_return = adj_df[self.tick[i]].where(mask, np.nan)
-            main_frame[f'filtered_{self.tick[i]}'] = eligible_return
+        tot_weigh = pd.Series(0, index=self.momentum.index)
+        
+        temp = temp.dropna(how='all')
+        temp = temp.replace(0, np.nan)
+        temp = 1/temp
+        tot_weigh = temp.div(temp.sum(axis=1), axis=0)
 
-            inverse_weigh = 1/eligible_return.replace(0, np.nan)
-            main_frame[f'inverse_{self.tick[i]}'] = inverse_weigh
+        #save_df_csv(tot_weigh, 'tot_weigh')
 
-            tot_weigh = tot_weigh.add(inverse_weigh, fill_value=0)
+        close = self.ticker_df['Close']
+        close.drop(columns=['SPY'], inplace=True)
+        #save_df_csv(close, 'close')
+        value = close*tot_weigh.shift()
+        value = value.sum(axis=1).to_frame()
 
-        for i in range(1, len(self.tick)):
-            main_frame[f'tru_w_{self.tick[i]}'] = main_frame[f'inverse_{self.tick[i]}']/tot_weigh
+        save_df_csv(value, 'value_added')
 
-        main_frame.fillna(0, inplace=True)
-        final_index = pd.Series(0, index=main_frame.index)
-
-        # 
-        for i in range(1, len(self.tick)):
-            #print(self.tick[i])
-            final_index = final_index.add((main_frame[f'tru_w_{self.tick[i]}']*close_df[self.tick[i]]), fill_value=0)
-            #print(final_index[-1])
-        final_frame = pd.DataFrame(index=main_frame.index)
-        final_frame['strat_performance'] = final_index
-        save_df_csv(final_frame, 'value')
-
-        save_df_csv(main_frame, 'huge test')
-        return final_frame
+        return value
 
 
 def save_df_csv(df, tick):
@@ -167,11 +139,11 @@ def main():
 
     process_SP500 = TickData(start_, end_, sect_list)
     process_SP500.scrape_tick()
-    """
     process_SP500.calc_vola()
     process_SP500.calc_momentum()
     final_frame = process_SP500.main_df_format()
     make_graph(final_frame) 
+    """
 """
 if __name__ == "__main__":
     main()
