@@ -5,145 +5,117 @@ import numpy as np
 import time
 import os
 # from scipy import stats
-from statistics import mean # note to self: mean() takes in one list of some sort, NOT multiple values
 from datetime import date
-import pandas_datareader.data as web
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+#extract data from already existing csv file on computers
+df = pd.read_csv(r"C:\Users\thefa\quant\check_tot_return.csv")
+
+tick = ["SPY", "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"]
+start_ = "1991-01-01"
+end_ = str(date.today())
+close_df = yf.download(tick, start=start_, end=end_, interval='1d', actions=True)
+close_df = close_df[['Close', 'Dividends']]
+df = (close_df['Close'] + close_df['Dividends']).pct_change()
+df.columns.name = None
+df = df.reset_index()
+
+#make sure the index is consistent
+df.set_index("Date", inplace=True)
+df.index = df.index.astype('datetime64[ns]')
+#gets rid of rows with all NaNs
+df = df.dropna(how='all')
+#benchmark, used later
+SPY = df[['SPY']]
+
+Close_ = close_df[['Close']]
+Close_.columns = Close_.columns.get_level_values(1)
+Close_.columns.name = None
+Close_ = Close_.reset_index()
+Close_.set_index("Date", inplace=True)
+Close_.index = Close_.index.astype('datetime64[ns]')
+
+# this line is subject to change, there could be an issue with how the calculatations are cancelling eachother out
+momentum = np.exp(np.log1p(df).rolling(window=62).sum()) - 1
+# rid of NaN rows
+momentum = momentum.dropna(how='all')
+spy_momentum = momentum[['SPY']]
+momentum = momentum.drop(columns='SPY').dropna(how='all')
+
+#vola calc
+vola = df.rolling(window=62).std(ddof=1)
+vola = vola.drop(columns='SPY')
+vola = vola.dropna(how='all')
+
+#calculate the 3 month moving average of each sector
+df = df.drop(columns=['SPY'])
+Close_ = Close_.drop(columns=['SPY']).reindex(df.index)
+indicator_mean_rever_SMA = df.rolling(window=63).mean().dropna(how='all')
+indicator_close_MA = Close_.rolling(window=21).mean().dropna(how='all') # ass
+indicator_mean_rever_EMA = df.ewm(span=200, adjust=False).mean().dropna(how='all')
+
+#mask for values for SMA and EMA mean reversion signals
+SMA_signal = indicator_mean_rever_SMA > df.reindex(indicator_mean_rever_SMA.index)
+SMA_signal2 = indicator_close_MA > Close_.reindex(indicator_close_MA.index) # ass
+EMA_signal = indicator_mean_rever_EMA > df.reindex(indicator_mean_rever_EMA.index)
+
+#3 month momentum signal
+momentum_signal = momentum > spy_momentum.reindex(momentum.index).values
+
+# mask anded with MA_signal on the better momentum
+signal = momentum_signal & EMA_signal
+
+#signal into int for calculation
+signal = signal.astype(int)
+# multiply by vola for weighting calc
+signal *= vola
+signal = signal.replace(0, np.nan) # number * NaN = NaN
+#signal
+
+inv_vol = 1/signal # invert
+weighting = inv_vol.div(inv_vol.sum(axis=1), axis=0) # weighting calculation, each value divided by sum of that row
+
+strat = weighting.shift()*df.reindex(weighting.index) # get the weights * etf values
+
+strat = (1 + strat.sum(axis=1)).cumprod() # the calc for the actual graph
+SPYy = (1 + SPY.reindex(strat.index)).cumprod()
+
+#turn into series first
+strat = strat.squeeze()
+SPYy = SPYy.squeeze()
+
+# calc drawdowns
+strat_dd = (strat / strat.cummax()) - 1
+spy_dd = (SPYy / SPYy.cummax()) - 1
 
 
-# remaking the elements within the df_dict into a class
-# pass the elements into the class attributes instead of hotwiring them every time
-# 
-class TickData:
+# subplots
+fig = make_subplots(
+    rows=2, cols=1, shared_xaxes=True,
+    subplot_titles=("Cumulative Returns", "Drawdowns"),
+    row_heights=[0.6, 0.4], vertical_spacing=0.05
+)
 
+# cumulative return
+fig.add_trace(go.Scatter(x=strat.index, y=strat, name="Strategy", line=dict(color='blue')), row=1, col=1)
+fig.add_trace(go.Scatter(x=SPYy.index, y=SPYy, name="SPY", line=dict(color='red')), row=1, col=1)
 
-    def __init__(self, start, end, ticker):
-        self.start = start
-        self.end = end
-        self.tick = ticker # list
-        self.ticker_df = pd.DataFrame()
-        self.tot_return = pd.DataFrame()
-        self.volatility = pd.DataFrame()
-        self.momentum = pd.DataFrame()
-        self.volatility_baseline = 0
-        self.HQM = 0
-        self.vola_adj_re = 0
-        self.M1 = 0
+#Drawdowns
+fig.add_trace(go.Scatter(x=strat_dd.index, y=strat_dd, name="Strategy DD", line=dict(color='blue', dash='dot')), row=2, col=1)
+fig.add_trace(go.Scatter(x=spy_dd.index, y=spy_dd, name="SPY DD", line=dict(color='red', dash='dot')), row=2, col=1)
 
+# layout
+fig.update_layout(
+    template="plotly_dark",
+    height=700,
+    title="Performance and Drawdowns",
+    yaxis1_title="Value",
+    yaxis2_title="Drawdown",
+)
 
-    def scrape_tick(self):
-        # get tickers info from current selected time
-        tickers = yf.Tickers(" ".join(self.tick))
-        # there is a slight bug that makes yf extract a few days less of data than what is required. future possible fix ticket
-        self.ticker_df = yf.download(self.tick, start=self.start, end=self.end, interval='1d', actions=True)
-        if self.ticker_df.index.empty:
-            print(f"No data for {tickers}, skipping...")
-            self.ticker_df = pd.DataFrame()
-            return 1
-        
-        #filter out useless columns
-        self.ticker_df = self.ticker_df[['Close', 'Dividends']]
-        #total return
-        self.tot_return = (self.ticker_df['Close'] + self.ticker_df['Dividends']).pct_change()
-        #TRI = 100 * np.exp(self.ticker_df['Log_Return'].cumsum())
-        
-        return 0
+# Drawdowns shown as %
+fig.update_yaxes(tickformat=".0%", row=2, col=1)
+#fig.update_yaxes(type='log')
 
-
-    def calc_vola(self, days=62):
-        self.volatility = self.tot_return.rolling(window=days).std()
-        #save_df_csv(self.volatility, 'vola_test')
-
-    def calc_momentum(self, days=62):
-        self.momentum = np.exp(np.log1p(self.tot_return).rolling(window=days).sum()) - 1
-        #save_df_csv(self.momentum, 'momentum_test')
-
-
-    def main_df_format(self):
-        main_frame = pd.DataFrame()
-        # ranking with simple 3 month momentum
-        baseline = self.momentum['SPY']
-        self.momentum.drop(columns=['SPY'], inplace=True)
-
-        baseline = baseline.reindex(self.momentum.index)
-        temp = self.volatility.where(self.momentum > baseline.values[:, None], other=0) 
-        temp2 = self.momentum.where(self.momentum > baseline.values[:, None], other=0)
-        save_df_csv(temp2, 'test_multicolumn_mask')
-
-        tot_weigh = pd.Series(0, index=self.momentum.index)
-        
-        temp = temp.dropna(how='all')
-        temp = temp.replace(0, np.nan)
-        temp = 1/temp
-        tot_weigh = temp.div(temp.sum(axis=1), axis=0)
-
-        #save_df_csv(tot_weigh, 'tot_weigh')
-
-        close = self.ticker_df['Close']
-        close.drop(columns=['SPY'], inplace=True)
-        #save_df_csv(close, 'close')
-        value = close*tot_weigh.shift()
-        value = value.sum(axis=1).to_frame()
-
-        save_df_csv(value, 'value_added')
-
-        return value
-
-
-def save_df_csv(df, tick):
-
-    if os.path.exists(f"check_{tick}.csv"):
-        try:
-            os.remove(f"check_{tick}.csv")
-        except PermissionError:
-            print("the file is currently open, force shut down")
-            os.system(f"taskkill /f /im excel.exe")
-            time.sleep(0.7)
-            os.remove(f"check_{tick}.csv")
-        print(f"deleted prev version of check_{tick}.csv")
-
-    df.to_csv(f"check_{tick}.csv")
-
-
-def extract_csv(tick):
-    df = pd.read_csv(f"check_{tick}")
-    return df
-
-
-def make_graph(df):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=df.iloc[:, 0], mode='lines', name='Value'))
-
-    fig.update_layout(
-        title="Time Series Graph",
-        xaxis_title="Date",
-        yaxis_title="Value",
-        xaxis=dict(showgrid=True),
-        yaxis=dict(showgrid=True)
-    )
-
-    fig.show()
-    return 0
-
-
-def main():
-
-    #list of SPX sectors including SPX itself
-    sect_list = ["SPY", "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"]
-
-    start_ = "1991-01-01"
-    end_ = str(date.today())
-    #end_ = "2009-01-01"
-    start_adj = pd.to_datetime(end_) - pd.DateOffset(years=1, days=5)
-    end_adj = pd.to_datetime(start_) + pd.DateOffset(years=1)
-
-    process_SP500 = TickData(start_, end_, sect_list)
-    process_SP500.scrape_tick()
-    process_SP500.calc_vola()
-    process_SP500.calc_momentum()
-    final_frame = process_SP500.main_df_format()
-    make_graph(final_frame) 
-    """
-"""
-if __name__ == "__main__":
-    main()
+fig.show()
