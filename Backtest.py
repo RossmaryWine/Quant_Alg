@@ -28,7 +28,7 @@ df = df.dropna(how='all')
 SPY = df[['SPY']]
 
 
-def calc(df, timeframe_general=62, time_signal=62, timeframe_TriMA=62, mask = 0b0000):
+def calc(df, tick, timeframe_general=62, time_signal=62, timeframe_TriMA=62, mask = 0b0000):
     # this line is subject to change, there could be an issue with how the calculatations are cancelling eachother out
     momentum = np.exp(np.log1p(df).rolling(window=timeframe_general).sum()) - 1
     # rid of NaN rows
@@ -43,12 +43,13 @@ def calc(df, timeframe_general=62, time_signal=62, timeframe_TriMA=62, mask = 0b
 
     #calculate the 3 month MAs of each sector, with different MA techniques
     df = df.drop(columns=['SPY'])
-    indicator_mean_rever_SMA = df.rolling(window=time_signal).mean().dropna(how='all')
-    indicator_mean_rever_TriMA = indicator_mean_rever_SMA.rolling(window=timeframe_TriMA).mean().dropna(how='all')
-    indicator_mean_rever_EMA = df.ewm(span=time_signal, adjust=False).mean().dropna(how='all')
-    tick_ = tick[1:]
-    indicator_mean_rever_KAMA = pd.DataFrame(columns=tick_, index=df.index)
-    for col in tick_:
+    indicator_mean_rever_SMA = df.rolling(window=time_signal).mean().dropna(how='all') #SMA
+    indicator_mean_rever_TriMA = indicator_mean_rever_SMA.rolling(window=timeframe_TriMA).mean().dropna(how='all') # doulbe SMA = Triangular MA
+    indicator_mean_rever_EMA = df.ewm(span=time_signal, adjust=False).mean().dropna(how='all') # EMA
+    tick_ = tick[1:] # rid of spy
+    indicator_mean_rever_KAMA = pd.DataFrame(columns=tick_, index=df.index) 
+    # no broacasting for ta module, had to use loop
+    for col in tick_: # KAMA
         indicator_mean_rever_KAMA[col] = ta.momentum.KAMAIndicator(df[col], window=time_signal).kama()
     indicator_mean_rever_KAMA = indicator_mean_rever_KAMA.dropna(how='all')
 
@@ -61,7 +62,9 @@ def calc(df, timeframe_general=62, time_signal=62, timeframe_TriMA=62, mask = 0b
     signal_list = [SMA_signal, EMA_signal, KAMA_signal, TriMA_signal]
     mask_list = []
 
+    #masking bit to check if one MA is selected
     bit = 0b1000
+    # loop through the masking value to get rid of uneeded signal
     for i in signal_list:
         if (mask & bit) == 0:
             i = pd.DataFrame(True, index=i.index, columns=i.columns)
@@ -97,11 +100,11 @@ def draw_graph(strat):
     SPYy = (1 + SPY.reindex(strat.index)).cumprod()
     SPYy = SPYy.squeeze()
 
-    # === Calculate Drawdowns ===
+    # Calculate Drawdowns
     strat_dd = (strat / strat.cummax()) - 1
     spy_dd = (SPYy / SPYy.cummax()) - 1
 
-    # === Create subplots ===
+    # Create subplots
 
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
@@ -109,17 +112,17 @@ def draw_graph(strat):
         row_heights=[0.6, 0.4], vertical_spacing=0.05
     )
 
-    # --- Cumulative Returns Plot ---
+    # Cumulative Returns Plot
     fig.add_trace(go.Scatter(x=strat.index, y=strat, name="Strategy", line=dict(color='blue')), row=1, col=1)
     fig.add_trace(go.Scatter(x=SPYy.index, y=SPYy, name="SPY", line=dict(color='red')), row=1, col=1)
     #fig.add_trace(go.Scatter(x=SPYy.index, y=SPYy, name="SPY", line=dict(color='cyan')), row=1, col=1)
     #fig.add_trace(go.Scatter(x=SPYy.index, y=SPYy, name="SPY", line=dict(color='pink')), row=1, col=1)
 
-    # --- Drawdowns Plot ---
+    # Drawdowns
     fig.add_trace(go.Scatter(x=strat_dd.index, y=strat_dd, name="Strategy DD", line=dict(color='blue', dash='dot')), row=2, col=1)
     fig.add_trace(go.Scatter(x=spy_dd.index, y=spy_dd, name="SPY DD", line=dict(color='red', dash='dot')), row=2, col=1)
 
-    # === Layout ===
+    # Layout
     fig.update_layout(
         template="plotly_dark",
         height=700,
@@ -128,11 +131,11 @@ def draw_graph(strat):
         yaxis2_title="Drawdown",
     )
 
-    # Drawdowns shown as % (e.g., -30%)
+    # Drawdowns shown as %
     fig.update_yaxes(tickformat=".0%", row=2, col=1)
     #fig.update_yaxes(type='log')
 
     fig.show()
 
-stratt = calc(df, 62, 200, 200, 0b0111)
+stratt = calc(df, tick, 62, 200, 200, 0b1111)
 draw_graph(stratt)
